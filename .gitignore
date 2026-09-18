@@ -1,0 +1,11 @@
+.env
+config.yaml
+*.csv
+*.json
+!*.json.template
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+_probe*.py

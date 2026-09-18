@@ -1,0 +1,50 @@
+# =============================================================================
+# Feedly Nessus Blind Spot Report - configuration
+# Copy to config.yaml and fill in. Never commit config.yaml with real IDs.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stream IDs to pull articles from.
+#
+# A folder stream ID and the individual feed stream IDs inside that folder
+# return overlapping but NOT identical sets, so configuring both gives the
+# widest CVE coverage. Duplicate CVEs are deduplicated in stage 2.
+#
+# Find these in Feedly: open the folder or feed, and the stream ID is in the
+# URL, or call GET /v3/collections (folders) and GET /v3/subscriptions (feeds).
+# ---------------------------------------------------------------------------
+
+stream_ids:
+  # Folder (Team Feed / category) - the Vulnerability folder
+  - "enterprise/YOUR_ENTERPRISE/category/YOUR_FOLDER_ID"
+
+  # AI Feeds inside that folder
+  - "enterprise/YOUR_ENTERPRISE/tag/YOUR_AI_FEED_ID"
+
+  # Individual RSS feeds
+  # - "feed/https://example.com/vulnerabilities.xml"
+
+# ---------------------------------------------------------------------------
+# Delta runs
+#
+# Epoch MILLISECONDS. Only articles newer than this are pulled. Leave unset
+# for the first full pull, then set it to the previous run time so subsequent
+# runs are incremental. The CLI flag --newer-than overrides this value.
+# ---------------------------------------------------------------------------
+
+# newer_than: 1758153600000
+
+# ---------------------------------------------------------------------------
+# Filters
+# ---------------------------------------------------------------------------
+
+# Keep Rejected / Likely Rejected CVE IDs in the report.
+# Leave false. Feedly's triage guidance is to drop these for production
+# pipelines: they are CVE IDs that were never formally assigned in MITRE/NVD,
+# and a blind spot report full of them destroys trust in the output.
+include_rejected: false
+
+# Restrict the report to CVEs that have a known exploit, PoC, or in-the-wild
+# exploitation. An uncovered CVE with a working exploit is the finding; an
+# uncovered CVE with nothing behind it is noise.
+exploited_only: false
