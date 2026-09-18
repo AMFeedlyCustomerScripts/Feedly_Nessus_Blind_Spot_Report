@@ -45,18 +45,26 @@ python3 feedly_nessus_blindspot.py --config config.yaml \
 
 ## The three coverage buckets
 
-This is the part that determines whether the report is trustworthy, because
-**absence has two different meanings**. The script never collapses them:
+One question decides the bucket: **is there a Nessus plugin for this CVE?**
 
 | Bucket | Meaning | `detectedBy` state |
 |---|---|---|
-| **Nessus covered** | A Nessus plugin detects this CVE. Plugin IDs captured. | Populated, contains a Nessus entry |
-| **Blind spot** | Other scanners detect it, Nessus does not. **A real gap, highest confidence output.** | Populated, no Nessus entry |
-| **Unknown** | No evidence of coverage — which is *not* evidence of no coverage. | Missing, `null`, or `[]` |
+| **Nessus covered** | A Nessus plugin detects this CVE. Plugin IDs captured. | Contains a Nessus entry |
+| **Blind spot** | **No Nessus plugin.** This is the gap being reported. | Populated by other scanners only, *or* missing / `null` / `[]` |
+| **Unknown** | No insight card could be retrieved, so nothing can be said either way. | Card not returned by the API |
 
-Reporting a blind spot from an empty `detectedBy` would be a fabricated
-finding, so Unknown is kept as its own bucket and is excluded by
-`--blind-spots-only`.
+A blind spot is a blind spot whether or not something else detects the CVE —
+if Nessus has no plugin, the scanner is blind to it. What other scanners do
+does not change the bucket, so it is recorded separately in the `evidence`
+column:
+
+| `evidence` | Meaning |
+|---|---|
+| `other scanners detect it` | Qualys/nuclei/etc. detect this and Nessus does not. Strongest evidence the gap is real — Feedly demonstrably has coverage data here and Nessus is absent from it. |
+| `no scanner data` | No detection data for any scanner. Still a CVE Nessus is not known to detect, but it could equally be a hole in the coverage data. |
+
+Use `--confirmed-only` to narrow a report to the `other scanners detect it`
+subset when you want the highest-confidence findings.
 
 ### Verified field structure
 
@@ -104,9 +112,9 @@ of every run.
 
 `cve_id`, `cvss_v3_base_score`, `cvss_category_estimate` (populated only where
 a real CVSS v3 score is absent), `epss`, `cve_status`, `patched`,
-`exploit_status`, `coverage`, `nessus_plugin_ids`, `other_scanners`,
-`detection_count`, `extraction_method`, `article_mentions`, `source_streams`,
-`feedly_card_url`.
+`exploit_status`, `coverage`, `evidence`, `nessus_plugin_ids`,
+`other_scanners`, `detection_count`, `extraction_method`, `article_mentions`,
+`source_streams`, `feedly_card_url`.
 
 Rows are sorted by exploit status, then EPSS descending, so the vuln
 management team triages the blind spots that actually matter first:
@@ -135,7 +143,8 @@ management team triages the blind spots that actually matter first:
 | *(default)* | Drops `Rejected` and `Likely Rejected` `cveStatus`. These are CVE IDs never formally assigned in MITRE/NVD; a blind spot report full of them destroys trust on the first run. |
 | `--include-rejected` | Keeps them. |
 | `--exploited-only` | Only CVEs with a KEV entry, in-the-wild reporting, exploit code, or a PoC. An uncovered CVE with a working exploit is the finding; an uncovered CVE with nothing behind it is noise. |
-| `--blind-spots-only` | Emits only the Blind spot bucket, dropping Covered and Unknown. |
+| `--blind-spots-only` | Emits only the Blind spot bucket — every CVE with no Nessus plugin. |
+| `--confirmed-only` | Narrows blind spots to those another scanner detects (`evidence = other scanners detect it`), the highest-confidence findings. |
 
 ---
 
@@ -148,7 +157,8 @@ management team triages the blind spots that actually matter first:
 --max-articles N          Stop after N articles per stream (testing safeguard)
 --output, -o PATH         CSV output path (default: nessus_blindspots.csv)
 --json-output PATH        Also write JSON
---blind-spots-only        Emit only the Blind spot bucket
+--blind-spots-only        Emit only the Blind spot bucket (no Nessus plugin)
+--confirmed-only          Narrow to blind spots another scanner detects
 --exploited-only          Only CVEs with a known exploit or PoC
 --include-rejected        Keep Rejected / Likely Rejected CVE IDs
 --inspect-detected-by ... Print raw detectedBy for sample CVEs and exit
@@ -161,12 +171,18 @@ management team triages the blind spots that actually matter first:
 ## Important caveat
 
 `detectedBy` reflects the scanner-coverage data Feedly has mapped, not a
-complete mirror of the Tenable plugin catalog. A CVE in the **Blind spot**
-bucket means *Feedly has detection data for other scanners but none for
-Nessus* — strong evidence of a gap, and the right place to start, but it
-should be confirmed against the Tenable plugin database before it is treated
-as a definitive coverage failure. The **Unknown** bucket is explicitly kept
-separate for exactly this reason.
+complete mirror of the Tenable plugin catalog. **Blind spot** means Feedly has
+no Nessus plugin recorded for that CVE — the right place to start, but confirm
+against the Tenable plugin database before treating it as a definitive
+coverage failure.
+
+The `evidence` column is what tells you how much weight to put on each row.
+`other scanners detect it` is the strong signal: Feedly demonstrably holds
+coverage data for that CVE and Nessus is not in it. `no scanner data` is
+weaker, because an empty `detectedBy` can equally mean Feedly has not mapped
+coverage for that CVE yet. Both are genuine blind spots for triage purposes;
+only the first is strong evidence on its own. Start with
+`--blind-spots-only --confirmed-only --exploited-only`, then widen.
 
 ---
 

@@ -132,10 +132,26 @@ REJECTED_STATUSES = {"rejected", "likely rejected"}
 
 CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
 
-# Coverage buckets
+# Coverage buckets. One question decides the bucket: is there a Nessus plugin?
+#
+#   Nessus covered - a Nessus entry exists in detectedBy. Plugin IDs captured.
+#   Blind spot     - no Nessus entry. This covers both the case where other
+#                    scanners detect the CVE and Nessus does not, and the case
+#                    where there is no detection data at all. Either way Nessus
+#                    is not detecting it, which is the gap being reported.
+#   Unknown        - no insight card could be retrieved for the CVE, so nothing
+#                    can be said about coverage either way.
 COVERED = "Nessus covered"
 BLIND_SPOT = "Blind spot"
 UNKNOWN = "Unknown"
+
+# Recorded alongside the bucket so a blind spot backed by other scanners can be
+# told apart from one backed by no data at all. This is supporting evidence,
+# not a separate bucket.
+EVIDENCE_OTHER_SCANNERS = "other scanners detect it"
+EVIDENCE_NO_DATA = "no scanner data"
+EVIDENCE_NESSUS = "nessus plugin"
+EVIDENCE_NO_CARD = "no insight card"
 
 VERBOSE = False
 
@@ -547,20 +563,20 @@ def scanner_entry_detection_id(entry: Any) -> str:
 
 def classify_coverage(card: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Sort a CVE into one of three buckets. Absence has two meanings and they are
-    not the same finding:
+    Decide the bucket on one question: does a Nessus plugin detect this CVE?
 
-      Nessus covered - detectedBy populated and contains a Nessus entry.
-      Blind spot     - detectedBy populated, but no Nessus entry. A real gap,
-                       and the highest confidence output in this report.
-      Unknown        - detectedBy missing, null, or empty. No evidence of
-                       coverage, which is not evidence of no coverage.
+    No Nessus entry means blind spot, whether or not other scanners detect it.
+    What other scanners do is recorded as supporting evidence, because a gap
+    backed by a Qualys detection is a stronger finding than one backed by no
+    data at all - but it is still the same gap.
     """
     detected_by = card.get("detectedBy")
 
+    # No detection data for anything, Nessus included: still a blind spot
     if not isinstance(detected_by, list) or len(detected_by) == 0:
         return {
-            "bucket": UNKNOWN,
+            "bucket": BLIND_SPOT,
+            "evidence": EVIDENCE_NO_DATA,
             "plugin_ids": [],
             "other_scanners": [],
             "detection_count": 0,
@@ -585,6 +601,7 @@ def classify_coverage(card: Dict[str, Any]) -> Dict[str, Any]:
     ):
         return {
             "bucket": COVERED,
+            "evidence": EVIDENCE_NESSUS,
             "plugin_ids": sorted(set(nessus_plugin_ids)),
             "other_scanners": sorted(other_scanners),
             "detection_count": len(detected_by),
@@ -592,6 +609,7 @@ def classify_coverage(card: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "bucket": BLIND_SPOT,
+        "evidence": EVIDENCE_OTHER_SCANNERS,
         "plugin_ids": [],
         "other_scanners": sorted(other_scanners),
         "detection_count": len(detected_by),
@@ -728,6 +746,7 @@ def build_row(cve_id: str, card: Dict[str, Any],
         "patched": card.get("patched") if isinstance(card.get("patched"), bool) else "",
         "exploit_status": status,
         "coverage": coverage["bucket"],
+        "evidence": coverage["evidence"],
         "nessus_plugin_ids": ";".join(coverage["plugin_ids"]),
         "other_scanners": ";".join(coverage["other_scanners"]),
         "detection_count": coverage["detection_count"],
@@ -738,6 +757,36 @@ def build_row(cve_id: str, card: Dict[str, Any],
         # Sort keys, stripped before writing
         "_exploit_rank": EXPLOIT_RANK.get(status, EXPLOIT_RANK[NO_EXPLOIT]),
         "_epss": epss_float(card),
+    }
+
+
+def build_unknown_row(cve_id: str, extraction: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Row for a CVE that appeared in the streams but has no Feedly insight card.
+
+    Nothing can be said about Nessus coverage for these, so they are Unknown
+    rather than blind spots. They are still reported: a CVE the team is reading
+    about that Feedly cannot resolve is worth someone looking at.
+    """
+    return {
+        "cve_id": cve_id,
+        "cvss_v3_base_score": "",
+        "cvss_category_estimate": "",
+        "epss": "",
+        "cve_status": "",
+        "patched": "",
+        "exploit_status": NO_EXPLOIT,
+        "coverage": UNKNOWN,
+        "evidence": EVIDENCE_NO_CARD,
+        "nessus_plugin_ids": "",
+        "other_scanners": "",
+        "detection_count": 0,
+        "extraction_method": ";".join(sorted(extraction.get("methods", []))),
+        "article_mentions": extraction.get("article_count", 0),
+        "source_streams": ";".join(sorted(extraction.get("streams", []))),
+        "feedly_card_url": feedly_card_url(cve_id),
+        "_exploit_rank": EXPLOIT_RANK[NO_EXPLOIT],
+        "_epss": 0.0,
     }
 
 
@@ -752,7 +801,7 @@ def sort_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 CSV_COLUMNS = [
     "cve_id", "cvss_v3_base_score", "cvss_category_estimate", "epss",
-    "cve_status", "patched", "exploit_status", "coverage",
+    "cve_status", "patched", "exploit_status", "coverage", "evidence",
     "nessus_plugin_ids", "other_scanners", "detection_count",
     "extraction_method", "article_mentions", "source_streams", "feedly_card_url",
 ]
@@ -784,23 +833,27 @@ def print_summary(rows: List[Dict[str, Any]], summary: Dict[str, Any]) -> None:
     print(f"    via structured entities    : {summary['via_entity']}")
     print(f"    via regex only             : {summary['via_regex_only']}")
     print(f"  Insight cards retrieved      : {summary['cards']}")
-    print(f"  Not found in Feedly          : {summary['not_found']}")
     print(f"  Dropped (rejected CVE IDs)   : {summary['dropped_rejected']}")
     print(f"  Dropped (no exploit)         : {summary['dropped_no_exploit']}")
     print("-" * 70)
     print(f"  Nessus covered               : {summary['covered']}")
     print(f"  BLIND SPOT                   : {summary['blind_spot']}")
-    print(f"  Unknown (no detectedBy data) : {summary['unknown']}")
+    print(f"    other scanners detect it   : {summary['blind_spot_confirmed']}")
+    print(f"    no scanner data at all     : {summary['blind_spot_no_data']}")
+    print(f"  Unknown (no insight card)    : {summary['unknown']}")
     print("=" * 70)
 
     top = [r for r in rows if r["coverage"] == BLIND_SPOT][:10]
     if top:
         print("\n  Top blind spots by triage order:")
-        print(f"    {'CVE':<18} {'EXPLOIT':<22} {'EPSS':>8}  {'CVSS':>5}  OTHER SCANNERS")
+        print(f"    {'CVE':<18} {'EXPLOIT':<22} {'EPSS':>8}  {'CVSS':>5}  EVIDENCE")
         for r in top:
+            evidence = r["evidence"]
+            if r["other_scanners"]:
+                evidence = f"{evidence} ({r['other_scanners'][:24]})"
             print(f"    {r['cve_id']:<18} {r['exploit_status']:<22} "
                   f"{str(r['epss'])[:8]:>8}  {str(r['cvss_v3_base_score']):>5}  "
-                  f"{r['other_scanners'][:40]}")
+                  f"{evidence}")
 
 
 # =============================================================================
@@ -850,7 +903,11 @@ Examples:
                         help="CSV output path (default: nessus_blindspots.csv)")
     parser.add_argument("--json-output", help="Also write JSON to this path")
     parser.add_argument("--blind-spots-only", action="store_true",
-                        help="Emit only the Blind spot bucket (drops Covered and Unknown)")
+                        help="Emit only the Blind spot bucket (every CVE with no "
+                             "Nessus plugin)")
+    parser.add_argument("--confirmed-only", action="store_true",
+                        help="Narrow blind spots to those another scanner detects, "
+                             "the strongest evidence the gap is real")
     parser.add_argument("--exploited-only", action="store_true",
                         help="Only CVEs with a known exploit or PoC")
     parser.add_argument("--include-rejected", action="store_true",
@@ -885,6 +942,7 @@ def inspect_detected_by(client: FeedlyClient, cve_ids: List[str]) -> None:
             print(f"    entry keys : {sorted(detected_by[0].keys()) if isinstance(detected_by[0], dict) else '-'}")
         coverage = classify_coverage(card)
         print(f"    -> bucket  : {coverage['bucket']}")
+        print(f"    -> evidence: {coverage['evidence']}")
         print(f"    -> plugins : {coverage['plugin_ids']}")
         print(f"    -> others  : {coverage['other_scanners']}")
         print(f"    cveStatus  : {card.get('cveStatus')!r}  "
@@ -987,10 +1045,19 @@ def main() -> int:
 
         rows.append(row)
 
+    # CVEs seen in the streams that Feedly has no card for: coverage unknowable
+    for cve_id in not_found:
+        rows.append(build_unknown_row(cve_id, extraction_index.get(cve_id, {})))
+
     if args.blind_spots_only:
         before = len(rows)
         rows = [r for r in rows if r["coverage"] == BLIND_SPOT]
         print(f"  --blind-spots-only: kept {len(rows)} of {before} rows")
+
+    if args.confirmed_only:
+        before = len(rows)
+        rows = [r for r in rows if r["evidence"] == EVIDENCE_OTHER_SCANNERS]
+        print(f"  --confirmed-only: kept {len(rows)} of {before} rows")
 
     rows = sort_rows(rows)
 
@@ -1008,6 +1075,10 @@ def main() -> int:
         "dropped_no_exploit": dropped_no_exploit,
         "covered": sum(1 for r in rows if r["coverage"] == COVERED),
         "blind_spot": sum(1 for r in rows if r["coverage"] == BLIND_SPOT),
+        "blind_spot_confirmed": sum(1 for r in rows
+                                    if r["evidence"] == EVIDENCE_OTHER_SCANNERS),
+        "blind_spot_no_data": sum(1 for r in rows
+                                  if r["evidence"] == EVIDENCE_NO_DATA),
         "unknown": sum(1 for r in rows if r["coverage"] == UNKNOWN),
     }
 
